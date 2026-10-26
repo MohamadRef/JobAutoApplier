@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from backend.jobs import get_jobs
+from backend.jobs import get_jobs, get_himalayas_jobs
 
 app = FastAPI(title="JobAutoApplier")
 
@@ -19,4 +19,10 @@ def health():
 
 @app.get("/jobs")
 def list_jobs():
-    return {"jobs": get_jobs()}
+    remotive_jobs = get_jobs()
+    himalayas_jobs = get_himalayas_jobs()
+
+    return {
+        "total": len(remotive_jobs) + len(himalayas_jobs),
+        "jobs": remotive_jobs + himalayas_jobs
+    }
