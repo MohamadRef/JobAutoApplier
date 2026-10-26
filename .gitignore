@@ -238,3 +238,5 @@ __pycache__/
 *.db-journal
 *.db-shm
 *.db-wal
+# Private resume data
+backend/data/

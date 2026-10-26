@@ -1,9 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.jobs import search_jobs
 from backend.database import init_db, save_jobs, get_saved_jobs
 from backend.matcher import rank_jobs
+from backend.resume import save_resume, get_resume_text
 
 app = FastAPI(title="JobAutoApplier")
 
@@ -14,7 +15,7 @@ app.add_middleware(
         "http://127.0.0.1:5173"
     ],
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"]
 )
 
@@ -32,6 +33,21 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.post("/resume/upload")
+async def upload_resume(file: UploadFile = File(...)):
+    return await save_resume(file)
+
+
+@app.get("/resume/status")
+def resume_status():
+    resume_text = get_resume_text()
+
+    return {
+        "uploaded": bool(resume_text.strip()),
+        "characters": len(resume_text)
+    }
 
 
 @app.get("/jobs")
