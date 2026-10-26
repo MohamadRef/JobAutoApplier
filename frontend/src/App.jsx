@@ -124,7 +124,7 @@ function SkeletonCard() {
   );
 }
 
-function JobCard({ job, saved, onToggleSave }) {
+function JobCard({ job, saved, status, onToggleSave, onStatusChange, onPrepare }) {
   const [open, setOpen] = useState(false);
   const matched = job.matched_skills || [];
   const missing = job.missing_skills || [];
@@ -188,11 +188,28 @@ function JobCard({ job, saved, onToggleSave }) {
           </div>
         )}
 
+        {job.eligibility_warnings?.length > 0 && (
+          <div className="eligibility-warnings">
+            <AlertCircle size={16} />
+            <div>{job.eligibility_warnings.map((warning, i) => <p key={i}>{warning}</p>)}</div>
+          </div>
+        )}
         <div className="job-actions">
           <a href={job.url} target="_blank" rel="noopener noreferrer" className="apply-btn">
             View job
             <ExternalLink size={15} />
           </a>
+          <button className="save-btn" onClick={onPrepare}>Prepare application</button>
+          <select
+            className="application-select"
+            aria-label={`Application status for ${job.title}`}
+            value={status}
+            onChange={(e) => onStatusChange(e.target.value)}
+          >
+            {['Not Applied', 'Applied', 'Interviewing', 'Offer', 'Rejected'].map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
           <button
             className={`save-btn ${saved ? "saved" : ""}`}
             onClick={onToggleSave}
@@ -246,7 +263,10 @@ function App() {
   const [sort, setSort] = useState("match");
   const [minMatch, setMinMatch] = useState(0);
   const [sourceFilter, setSourceFilter] = useState("all");
-  const [savedIds, setSavedIds] = useState(() => new Set());
+  const [tracked, setTracked] = useState({});
+  const [applicationPreview, setApplicationPreview] = useState(null);
+  const [previewError, setPreviewError] = useState("");
+  const [preparing, setPreparing] = useState(false);
 
   const fileInput = useRef(null);
 
@@ -281,9 +301,25 @@ function App() {
     }
   }
 
+  async function fetchTracking() {
+    try {
+      const response = await fetch(`${API_URL}/tracking`);
+      if (!response.ok) throw new Error('Cannot load tracked jobs');
+      const data = await response.json();
+      const next = {};
+      for (const row of data.items || []) {
+        next[`${row.source}-${row.job_id}`] = row;
+      }
+      setTracked(next);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   useEffect(() => {
     fetchJobs();
     checkResume();
+    fetchTracking();
   }, []);
 
   async function uploadResume(event) {
@@ -324,20 +360,63 @@ function App() {
     fetchJobs(keyword, location);
   }
 
-  function toggleSave(key) {
-    setSavedIds((prev) => {
-      const next = new Set(prev);
-      next.has(key) ? next.delete(key) : next.add(key);
-      return next;
-    });
+  async function prepareJob(job) {
+    setPreparing(true);
+    setPreviewError("");
+    setApplicationPreview(null);
+    try {
+      const response = await fetch(`${API_URL}/applications/prepare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job }),
+      });
+      if (!response.ok) throw new Error("Could not prepare application");
+      setApplicationPreview(await response.json());
+    } catch (err) {
+      setPreviewError(err.message);
+    } finally {
+      setPreparing(false);
+    }
   }
 
   const keyOf = (job) => `${job.source}-${job.id}`;
 
+  async function changeTracking(job, change) {
+    const key = keyOf(job);
+    const previous = tracked[key];
+    const updated = {
+      source: job.source,
+      job_id: String(job.id),
+      saved: previous?.saved ?? false,
+      status: previous?.status ?? 'Not Applied',
+      job: { ...previous?.job, ...job },
+      ...change,
+    };
+
+    // Only update UI when the database confirms it was saved.
+    try {
+      const response = await fetch(`${API_URL}/tracking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated),
+      });
+      if (!response.ok) throw new Error('Could not save application state');
+      setTracked((current) => ({
+        ...current,
+        [key]: { ...updated, job_id: updated.job_id },
+      }));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   const sources = useMemo(() => [...new Set(jobs.map((j) => j.source).filter(Boolean))], [jobs]);
 
   const visibleJobs = useMemo(() => {
-    let list = view === "saved" ? jobs.filter((j) => savedIds.has(keyOf(j))) : jobs;
+    const archived = Object.values(tracked)
+      .filter((entry) => entry.saved && entry.job)
+      .map((entry) => entry.job);
+    let list = view === "saved" ? archived : jobs;
     if (minMatch > 0) list = list.filter((j) => (j.match_score ?? -1) >= minMatch);
     if (sourceFilter !== "all") list = list.filter((j) => j.source === sourceFilter);
 
@@ -345,8 +424,9 @@ function App() {
     if (sort === "match") sorted.sort((a, b) => (b.match_score ?? -1) - (a.match_score ?? -1));
     if (sort === "company") sorted.sort((a, b) => (a.company || "").localeCompare(b.company || ""));
     return sorted;
-  }, [jobs, view, savedIds, minMatch, sourceFilter, sort]);
+  }, [jobs, view, tracked, minMatch, sourceFilter, sort]);
 
+  const savedCount = Object.values(tracked).filter((row) => row.saved).length;
   const scoredJobs = jobs.filter((j) => j.match_score != null);
   const averageMatch = scoredJobs.length
     ? Math.round(scoredJobs.reduce((s, j) => s + j.match_score, 0) / scoredJobs.length)
@@ -379,7 +459,7 @@ function App() {
           >
             <Bookmark size={18} />
             Saved
-            {savedIds.size > 0 && <span className="nav-count">{savedIds.size}</span>}
+            {savedCount > 0 && <span className="nav-count">{savedCount}</span>}
           </button>
         </nav>
 
@@ -589,13 +669,47 @@ function App() {
               <JobCard
                 key={keyOf(job)}
                 job={job}
-                saved={savedIds.has(keyOf(job))}
-                onToggleSave={() => toggleSave(keyOf(job))}
+                saved={Boolean(tracked[keyOf(job)]?.saved)}
+                status={tracked[keyOf(job)]?.status || 'Not Applied'}
+                onToggleSave={() => changeTracking(job, { saved: !tracked[keyOf(job)]?.saved })}
+                onStatusChange={(status) => changeTracking(job, { status })}
+                onPrepare={() => prepareJob(job)}
               />
             ))}
           </div>
         )}
       </main>
+      {(applicationPreview || previewError || preparing) && (
+        <div className="preview-backdrop" onClick={() => { setApplicationPreview(null); setPreviewError(""); }}>
+          <section className="preview-dialog" role="dialog" aria-modal="true" aria-label="Application preparation" onClick={(e) => e.stopPropagation()}>
+            <button className="preview-close" onClick={() => { setApplicationPreview(null); setPreviewError(""); }}>Close</button>
+            {preparing && <p>Preparing application...</p>}
+            {previewError && <p role="alert">{previewError}</p>}
+            {applicationPreview && (
+              <>
+                <h2>{applicationPreview.title}</h2>
+                <p>{applicationPreview.company}</p>
+                {!applicationPreview.ready ? (
+                  <p>{applicationPreview.message}</p>
+                ) : (
+                  <>
+                    <h3>Resume evidence</h3>
+                    <p>{applicationPreview.evidence_summary}</p>
+                    <h3>Not verified on resume</h3>
+                    <p>{applicationPreview.unverified_skills.join(", ") || "None detected"}</p>
+                    <h3>Before applying</h3>
+                    <ul>{applicationPreview.checklist.map((item) => <li key={item}>{item}</li>)}</ul>
+                    {applicationPreview.application_url && (
+                      <a className="apply-btn" href={applicationPreview.application_url} target="_blank" rel="noopener noreferrer">Open application <ExternalLink size={15}/></a>
+                    )}
+                    <p className="preview-note">{applicationPreview.note}</p>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }
