@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from backend.jobs import get_jobs
 
 app = FastAPI(title="JobAutoApplier")
 
@@ -14,3 +15,8 @@ def home():
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/jobs")
+def list_jobs():
+    return {"jobs": get_jobs()}
